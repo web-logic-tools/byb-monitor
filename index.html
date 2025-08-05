@@ -1,0 +1,169 @@
+
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>Monitor Bybit (+ funding)</title>
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: white;
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        h1, h2 {
+            color: #ffcc66;
+        }
+        label, select, input {
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        .section {
+            margin-top: 20px;
+        }
+        .output-box {
+            background-color: #191919;
+            color: #ffcc66;
+            padding: 10px;
+            white-space: pre-wrap;
+            overflow-y: auto;
+            max-height: 200px;
+            border: 1px solid #444;
+        }
+        .box-long {
+            background-color: #003300;
+            color: #00ff00;
+        }
+        .box-short {
+            background-color: #330000;
+            color: #ff4444;
+        }
+    </style>
+</head>
+<body>
+    <h1>📈 Monitor Bybit (+ funding)</h1>
+    <div>
+        <label for="soglia">% Soglia incremento:</label>
+        <input type="number" id="soglia" value="45" step="0.1">
+        <label for="fundingFilter">Filtro Funding Rate:</label>
+        <select id="fundingFilter">
+            <option>Tutti</option>
+            <option>0% - 0.9999%</option>
+            <option>1% - 1.9999%</option>
+            <option>2% - 2.9999%</option>
+            <option>3% - 3.9999%</option>
+            <option>5% - 5.9999%</option>
+            <option>>= 6%</option>
+        </select>
+        <span id="timer" style="float:right;">Aggiornamento in: 60s</span>
+    </div>
+
+    <div class="section">
+        <h2>🔥 Monete sopra soglia</h2>
+        <div id="attiveBox" class="output-box"></div>
+    </div>
+
+    <div class="section">
+        <h2>📈 Arbitraggio LONG (funding rate ≤ 0)</h2>
+        <div id="longBox" class="output-box box-long"></div>
+    </div>
+
+    <div class="section">
+        <h2>📉 Arbitraggio SHORT (funding rate > 0)</h2>
+        <div id="shortBox" class="output-box box-short"></div>
+    </div>
+
+    <script>
+        const INTERVALLO = 60;
+        let countdown = INTERVALLO;
+        const fundingRanges = {
+            "0% - 0.9999%": [0.0, 0.9999],
+            "1% - 1.9999%": [1.0, 1.9999],
+            "2% - 2.9999%": [2.0, 2.9999],
+            "3% - 3.9999%": [3.0, 3.9999],
+            "5% - 5.9999%": [5.0, 5.9999],
+            ">= 6%": [6.0, 1000.0]
+        };
+
+        function aggiornaCountdown() {
+            document.getElementById('timer').innerText = "Aggiornamento in: " + countdown + "s";
+            countdown--;
+            if (countdown < 0) countdown = INTERVALLO;
+        }
+
+        setInterval(aggiornaCountdown, 1000);
+
+        async function aggiornaDati() {
+            try {
+                const resp = await fetch("https://api.bybit.com/v5/market/tickers?category=linear");
+                const data = await resp.json();
+                const soglia = parseFloat(document.getElementById("soglia").value);
+                const filtro = document.getElementById("fundingFilter").value;
+                const range = fundingRanges[filtro];
+
+                const oraUTC = new Date();
+                const attive = [];
+                const longList = [];
+                const shortList = [];
+
+                for (const t of data.result.list) {
+                    const simbolo = t.symbol;
+                    if (!simbolo.endsWith("USDT")) continue;
+
+                    const last = parseFloat(t.lastPrice);
+                    const prev = parseFloat(t.prevPrice24h);
+                    if (!prev || isNaN(last) || isNaN(prev)) continue;
+
+                    const change = ((last - prev) / prev) * 100;
+                    if (change > soglia) {
+                        const fr = parseFloat(t.fundingRate) * 100;
+                        const fr_text = isNaN(fr) ? "N/A" : fr.toFixed(4) + "%";
+                        attive.push(`${simbolo}: +${change.toFixed(2)}% | Funding: ${fr_text}`);
+                    }
+
+                    let frVal = parseFloat(t.fundingRate) * 100;
+                    if (isNaN(frVal)) continue;
+
+                    if (range) {
+                        const abs_fr = Math.abs(frVal);
+                        if (!(abs_fr >= range[0] && abs_fr <= range[1])) continue;
+                    }
+
+                    let ts = parseFloat(t.nextFundingTime);
+                    if (ts > 1e12) ts = ts / 1000;
+                    const fundingTime = new Date(ts * 1000);
+                    const diffSec = Math.max(0, Math.floor((fundingTime - oraUTC) / 1000));
+                    const ore = Math.floor(diffSec / 3600);
+                    const minuti = Math.floor((diffSec % 3600) / 60);
+                    const countdown = `${String(ore).padStart(2, '0')}:${String(minuti).padStart(2, '0')}`;
+                    const orario = fundingTime.toLocaleTimeString('it-IT', {hour: '2-digit', minute:'2-digit'});
+
+                    const info = `${simbolo.padEnd(20)} ${frVal.toFixed(3).padStart(7)}%   ⏱ ${countdown} → ${orario}`;
+                    if (frVal <= 0) {
+                        longList.push({val: frVal, text: info});
+                    } else {
+                        shortList.push({val: frVal, text: info});
+                    }
+                }
+
+                document.getElementById("attiveBox").innerText = attive.join("\n");
+
+                longList.sort((a, b) => a.val - b.val);
+                shortList.sort((a, b) => b.val - a.val);
+
+                document.getElementById("longBox").innerText = longList.map(i => i.text).join("\n");
+                document.getElementById("shortBox").innerText = shortList.map(i => i.text).join("\n");
+            } catch (e) {
+                console.error("Errore:", e);
+            }
+        }
+
+        setInterval(() => {
+            aggiornaDati();
+            countdown = INTERVALLO;
+        }, INTERVALLO * 1000);
+
+        aggiornaDati(); // Prima esecuzione
+    </script>
+</body>
+</html>
